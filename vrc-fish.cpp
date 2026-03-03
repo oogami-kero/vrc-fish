@@ -42,9 +42,7 @@ struct g_params {
 	GrayTpl tpl_vr_bite_excl_bottom;
 	GrayTpl tpl_vr_bite_excl_full;
 	GrayTpl tpl_vr_minigame_bar_full;
-	GrayTpl tpl_vr_fish_icon;
-	GrayTpl tpl_vr_fish_icon_alt;
-	GrayTpl tpl_vr_fish_icon_alt2;
+	std::vector<GrayTpl> tpl_vr_fish_icons;
 	GrayTpl tpl_vr_player_slider;
 };
 
@@ -95,6 +93,8 @@ struct g_config {
 	string tpl_fish_icon;
 	string tpl_fish_icon_alt;
 	string tpl_fish_icon_alt2;
+	string fish_icon_templates;               // comma-separated list (new key)
+	std::vector<string> fish_icon_template_files; // parsed list used at runtime
 	string tpl_player_slider;
 
 	double fish_scale_1;
@@ -194,6 +194,29 @@ void loadConfig() {
 	config.tpl_fish_icon_alt = ini.get("vrchat_fish", "tpl_fish_icon_alt", "fish_icon_alt.png");
 	config.tpl_fish_icon_alt2 = ini.get("vrchat_fish", "tpl_fish_icon_alt2", "fish_icon_alt2.png");
 	config.tpl_player_slider = ini.get("vrchat_fish", "tpl_player_slider", "player_slider.png");
+
+	// Parse fish_icon_templates (comma-separated); fall back to individual keys for backward compat
+	config.fish_icon_templates = ini.get("vrchat_fish", "fish_icon_templates", "");
+	config.fish_icon_template_files.clear();
+	if (!config.fish_icon_templates.empty()) {
+		std::istringstream ss(config.fish_icon_templates);
+		std::string token;
+		while (std::getline(ss, token, ',')) {
+			size_t start = token.find_first_not_of(" \t\r\n");
+			size_t end = token.find_last_not_of(" \t\r\n");
+			if (start != std::string::npos) {
+				config.fish_icon_template_files.push_back(token.substr(start, end - start + 1));
+			}
+		}
+	}
+	if (config.fish_icon_template_files.empty()) {
+		// Backward compatibility: build list from individual keys
+		config.fish_icon_template_files.push_back(config.tpl_fish_icon);
+		config.fish_icon_template_files.push_back(config.tpl_fish_icon_alt);
+		if (!config.tpl_fish_icon_alt2.empty()) {
+			config.fish_icon_template_files.push_back(config.tpl_fish_icon_alt2);
+		}
+	}
 
 	config.fish_scale_1 = ini.getDouble("vrchat_fish", "fish_scale_1", 0.9);
 	config.fish_scale_2 = ini.getDouble("vrchat_fish", "fish_scale_2", 1.0);
@@ -311,6 +334,38 @@ g_params::GrayTpl loadGrayTplFromFile(const std::string& path) {
 	return tpl;
 }
 
+static bool tryLoadGrayTplFromFile(const std::string& path, g_params::GrayTpl& tpl) {
+	Mat raw = imread(path, IMREAD_UNCHANGED);
+	if (raw.empty()) {
+		std::cout << "模板加载跳过（文件不存在）：" << path << endl;
+		return false;
+	}
+	if (raw.channels() == 4) {
+		std::vector<Mat> channels;
+		split(raw, channels);
+		Mat alpha = channels[3];
+		double minA = 0, maxA = 0;
+		minMaxLoc(alpha, &minA, &maxA);
+		Mat bgr;
+		cvtColor(raw, bgr, COLOR_BGRA2BGR);
+		cvtColor(bgr, tpl.gray, COLOR_BGR2GRAY);
+		if (minA < 255.0) {
+			threshold(alpha, tpl.mask, 0, 255, THRESH_BINARY);
+			std::cout << "模板已加载（带mask）：" << path << endl;
+		} else {
+			std::cout << "模板已加载：" << path << endl;
+		}
+	} else {
+		if (raw.channels() == 1) {
+			tpl.gray = raw;
+		} else {
+			cvtColor(raw, tpl.gray, COLOR_BGR2GRAY);
+		}
+		std::cout << "模板已加载：" << path << endl;
+	}
+	return true;
+}
+
 static std::string joinPath(const std::string& dir, const std::string& file) {
 	if (dir.empty()) {
 		return file;
@@ -411,9 +466,17 @@ void init() {
 	params.tpl_vr_bite_excl_bottom = loadGrayTplFromFile(joinPath(config.resource_dir, config.tpl_bite_exclamation_bottom));
 	params.tpl_vr_bite_excl_full = loadGrayTplFromFile(joinPath(config.resource_dir, config.tpl_bite_exclamation_full));
 	params.tpl_vr_minigame_bar_full = loadGrayTplFromFile(joinPath(config.resource_dir, config.tpl_minigame_bar_full));
-	params.tpl_vr_fish_icon = loadGrayTplFromFile(joinPath(config.resource_dir, config.tpl_fish_icon));
-	params.tpl_vr_fish_icon_alt = loadGrayTplFromFile(joinPath(config.resource_dir, config.tpl_fish_icon_alt));
-	params.tpl_vr_fish_icon_alt2 = loadGrayTplFromFile(joinPath(config.resource_dir, config.tpl_fish_icon_alt2));
+	params.tpl_vr_fish_icons.clear();
+	for (const auto& filename : config.fish_icon_template_files) {
+		g_params::GrayTpl tpl{};
+		if (tryLoadGrayTplFromFile(joinPath(config.resource_dir, filename), tpl)) {
+			params.tpl_vr_fish_icons.push_back(std::move(tpl));
+		}
+	}
+	if (params.tpl_vr_fish_icons.empty()) {
+		std::cout << "错误：未能加载任何鱼图标模板，请检查配置。" << endl;
+		exit();
+	}
 	params.tpl_vr_player_slider = loadGrayTplFromFile(joinPath(config.resource_dir, config.tpl_player_slider));
 }
 
@@ -917,51 +980,51 @@ static bool fillFishSliderResult(const Mat& gray, const Rect& roi, const TplMatc
 	return true;
 }
 
-// 快速检测（控制循环用）：单尺度 + 单鱼模板，仅 2 次 matchTemplate
+// 快速检测（控制循环用）：单尺度 + 所有鱼模板，选最佳模板
 // cachedFishScale: 上次多尺度匹配得到的最佳缩放比
-// cachedFishTplIdx: 0=fish_icon, 1=fish_icon_alt, 2=fish_icon_alt2
+// bestTplIdxOut: 输出本次选中的模板索引
 static bool detectFishAndSliderFast(const Mat& gray, const Rect& barRect, FishSliderResult* result,
-	double cachedFishScale, int cachedFishTplIdx) {
+	double cachedFishScale, int* bestTplIdxOut) {
 	Rect roi = clampRect(barRect, gray.size());
 	if (roi.width <= 0 || roi.height <= 0) return false;
 
-	const auto& fishTpl = (cachedFishTplIdx == 2) ? params.tpl_vr_fish_icon_alt2
-		: (cachedFishTplIdx == 1) ? params.tpl_vr_fish_icon_alt : params.tpl_vr_fish_icon;
-	TplMatch fish = matchBestRoiAtScale(gray, fishTpl, roi, cachedFishScale);
+	TplMatch bestFish{};
+	int bestIdx = 0;
+	for (int i = 0; i < (int)params.tpl_vr_fish_icons.size(); i++) {
+		if (params.tpl_vr_fish_icons[i].empty()) continue;
+		TplMatch fish = matchBestRoiAtScale(gray, params.tpl_vr_fish_icons[i], roi, cachedFishScale);
+		if (fish.score > bestFish.score) {
+			bestFish = fish;
+			bestIdx = i;
+		}
+	}
+	if (bestTplIdxOut) *bestTplIdxOut = bestIdx;
 	TplMatch slider = matchBestRoi(gray, params.tpl_vr_player_slider, roi, TM_CCORR_NORMED);
-	return fillFishSliderResult(gray, roi, fish, slider, result);
+	return fillFishSliderResult(gray, roi, bestFish, slider, result);
 }
 
-// 全检测（首帧 + 周期性刷新用）：多尺度 + 双鱼模板，输出最佳缩放/模板索引
+// 全检测（首帧 + 周期性刷新用）：多尺度 + 所有鱼模板，输出最佳缩放/模板索引
 static bool detectFishAndSliderFull(const Mat& gray, const Rect& barRect, FishSliderResult* result,
 	double* bestScaleOut, int* bestTplIdxOut) {
 	Rect roi = clampRect(barRect, gray.size());
 	if (roi.width <= 0 || roi.height <= 0) return false;
 
-	double scale1 = 1.0, scale2 = 1.0, scale3 = 1.0;
-	TplMatch fish1 = matchBestRoiMultiScale(gray, params.tpl_vr_fish_icon, roi, TM_CCOEFF_NORMED, &scale1);
-	TplMatch fish2 = matchBestRoiMultiScale(gray, params.tpl_vr_fish_icon_alt, roi, TM_CCOEFF_NORMED, &scale2);
-	TplMatch fish3{};
-	if (!params.tpl_vr_fish_icon_alt2.empty())
-		fish3 = matchBestRoiMultiScale(gray, params.tpl_vr_fish_icon_alt2, roi, TM_CCOEFF_NORMED, &scale3);
-
-	TplMatch fish{};
+	TplMatch bestFish{};
 	int bestIdx = 0;
-	double bestScale = scale1;
-	if (fish1.score >= fish2.score && fish1.score >= fish3.score) {
-		fish = fish1;
-	} else if (fish2.score >= fish1.score && fish2.score >= fish3.score) {
-		fish = fish2;
-		bestIdx = 1;
-		bestScale = scale2;
-	} else {
-		fish = fish3;
-		bestIdx = 2;
-		bestScale = scale3;
+	double bestScale = 1.0;
+	for (int i = 0; i < (int)params.tpl_vr_fish_icons.size(); i++) {
+		if (params.tpl_vr_fish_icons[i].empty()) continue;
+		double scale = 1.0;
+		TplMatch fish = matchBestRoiMultiScale(gray, params.tpl_vr_fish_icons[i], roi, TM_CCOEFF_NORMED, &scale);
+		if (fish.score > bestFish.score) {
+			bestFish = fish;
+			bestIdx = i;
+			bestScale = scale;
+		}
 	}
 
 	TplMatch slider = matchBestRoi(gray, params.tpl_vr_player_slider, roi, TM_CCORR_NORMED);
-	bool ok = fillFishSliderResult(gray, roi, fish, slider, result);
+	bool ok = fillFishSliderResult(gray, roi, bestFish, slider, result);
 	if (!ok) {
 		return false;
 	}
@@ -1381,36 +1444,36 @@ void fishVrchat() {
 
 			Rect matchRoi = fixedTrackRoi;
 
-			FishSliderResult det;
-			bool ok = false;
-			bool didFullDetect = false;
-			// 首帧用全检测（多尺度+双模板）确定最佳缩放/模板
-			// 后续帧始终用快速路径（单尺度+单模板）
-			// 只在快速路径失败时才回退到全检测
-			if (!hasCachedScale) {
+		FishSliderResult det;
+		bool ok = false;
+		bool didFullDetect = false;
+		// 首帧用全检测（多尺度+所有模板）确定最佳缩放/模板
+		// 后续帧用快速路径（单尺度+所有模板，每帧选最佳）
+		// 只在快速路径失败时才回退到全检测
+		if (!hasCachedScale) {
+			double bestScale = 1.0;
+			int bestIdx = 0;
+			ok = detectFishAndSliderFull(gray, matchRoi, &det, &bestScale, &bestIdx);
+			if (ok) {
+				cachedFishScale = bestScale;
+				cachedFishTplIdx = bestIdx;
+				hasCachedScale = true;
+			}
+			didFullDetect = true;
+		} else {
+			ok = detectFishAndSliderFast(gray, matchRoi, &det, cachedFishScale, &cachedFishTplIdx);
+			if (!ok) {
+				// 快速路径失败，尝试全检测（可能鱼图标变了）
 				double bestScale = 1.0;
 				int bestIdx = 0;
 				ok = detectFishAndSliderFull(gray, matchRoi, &det, &bestScale, &bestIdx);
 				if (ok) {
 					cachedFishScale = bestScale;
 					cachedFishTplIdx = bestIdx;
-					hasCachedScale = true;
 				}
 				didFullDetect = true;
-			} else {
-				ok = detectFishAndSliderFast(gray, matchRoi, &det, cachedFishScale, cachedFishTplIdx);
-				if (!ok) {
-					// 快速路径失败，尝试全检测（可能鱼图标变了）
-					double bestScale = 1.0;
-					int bestIdx = 0;
-					ok = detectFishAndSliderFull(gray, matchRoi, &det, &bestScale, &bestIdx);
-					if (ok) {
-						cachedFishScale = bestScale;
-						cachedFishTplIdx = bestIdx;
-					}
-					didFullDetect = true;
-				}
 			}
+		}
 
 			unsigned long long detectMs = nowMs() - loopStart;
 
@@ -1506,20 +1569,22 @@ void fishVrchat() {
 						if (dtMs > 1000.0) dtMs = 1000.0; // cap at 1s
 					}
 
-					// 输出 ctrl 日志（包含 dt，便于离线拟合按真实 dt 归一化）
-					if (config.vr_debug || vrLogFile.is_open()) {
-						std::ostringstream oss;
-						oss << "[ctrl] " << detectMs << "ms"
-							<< (didFullDetect ? " [full]" : " [fast]")
-							<< " dt=" << (int)dtMs << "ms"
-							<< " t=" << t
-							<< " fishY=" << fishY
-							<< " sCY=" << sliderCY
-							<< " sH=" << sliderH
-							<< (det.hasBounds ? " [color]" : " [tpl]")
-							<< " hold=" << (holding ? 1 : 0);
-						writeVrLogLine(oss.str(), config.vr_debug);
-					}
+				// 输出 ctrl 日志（包含 dt，便于离线拟合按真实 dt 归一化）
+				if (config.vr_debug || vrLogFile.is_open()) {
+					std::ostringstream oss;
+					oss << "[ctrl] " << detectMs << "ms"
+						<< (didFullDetect ? " [full]" : " [fast]")
+						<< " tpl=" << cachedFishTplIdx
+						<< " fs=" << det.fishScore
+						<< " dt=" << (int)dtMs << "ms"
+						<< " t=" << t
+						<< " fishY=" << fishY
+						<< " sCY=" << sliderCY
+						<< " sH=" << sliderH
+						<< (det.hasBounds ? " [color]" : " [tpl]")
+						<< " hold=" << (holding ? 1 : 0);
+					writeVrLogLine(oss.str(), config.vr_debug);
+				}
 
 					lastDtRatio = dtMs / baseDtMs;
 					prevCtrlTs = t;
