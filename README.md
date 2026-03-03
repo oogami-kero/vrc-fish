@@ -103,6 +103,7 @@
 | `vrchat_fish` | `capture_interval_ms` / `control_interval_ms` | 截图轮询与控制循环间隔 |
 | `vrchat_fish` | `bite_threshold` / `minigame_threshold` / `fish_icon_threshold` / `slider_threshold` | 关键模板匹配阈值（0~1） |
 | `vrchat_fish` | `fish_scale_*` / `track_scale_*` | 多尺度模板匹配缩放比（鱼图标/滑块轨道） |
+| `vrchat_fish` | `fish_icon_templates` | 鱼图标模板文件列表（逗号分隔），支持任意数量颜色变体；留空时沿用 `tpl_fish_icon*` 三项配置 |
 | `vrchat_fish` | `cleanup_*` / `cleanup_reel_key` | 结算/清理到下一轮：等待、点击次数、收杆按键等 |
 | `vrchat_fish` | `ml_mode` / `ml_record_csv` / `ml_weights_file` | 0=自动控制，1=录制数据，2=ML 推理 |
 | `vrchat_fish` | `debug` / `debug_pic` / `debug_dir` / `vr_log_file` | 调试输出、截图保存与 CSV 日志 |
@@ -110,6 +111,11 @@
 资源模板：
 - 默认目录：`Resource-VRChat/`
 - 可通过 `tpl_*` 配置项改名或替换模板文件（咬钩感叹号、轨道、鱼图标、玩家滑块等）
+- 如需支持更多鱼图标颜色（蓝色、紫色等），在 `fish_icon_templates` 中以逗号分隔列出所有模板文件名：
+  ```
+  fish_icon_templates=fish_icon.png,fish_icon_alt.png,fish_icon_alt2.png,fish_icon_blue.png,fish_icon_purple.png
+  ```
+  将额外的模板图片放入 `Resource-VRChat/`，全检测（多尺度）和快速检测（单缓存尺度）均会对所有列出的模板求最佳匹配。
 
 ## 日志与调试
 

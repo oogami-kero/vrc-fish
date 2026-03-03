@@ -100,12 +100,20 @@ Key highlights:
 - Resolution: `force_resolution`, `target_width`, `target_height`
 - Thresholds: `bite_threshold`, `minigame_threshold`, `fish_icon_threshold`, `slider_threshold`
 - Multi-scale template matching: `fish_scale_*` (fish icons), `track_scale_*` (minigame track)
+- Fish icon templates: `fish_icon_templates` (comma-separated list of filenames for arbitrary color variants)
+  - Backward-compatible: if omitted, `tpl_fish_icon`, `tpl_fish_icon_alt`, `tpl_fish_icon_alt2` are used
+  - Example: `fish_icon_templates=fish_icon.png,fish_icon_alt.png,fish_icon_alt2.png,fish_icon_blue.png`
 - Cleanup loop: `cleanup_*`, `cleanup_reel_key`
 - ML: `ml_mode` (0=auto, 1=record, 2=infer), `ml_record_csv`, `ml_weights_file`
 - Debug/log: `debug`, `debug_pic`, `debug_dir`, `vr_log_file`
 
 Templates:
 - Default directory: `Resource-VRChat/` (override via `tpl_*` keys)
+- To support additional fish icon colors (blue, purple, etc.), add them via `fish_icon_templates`:
+  ```
+  fish_icon_templates=fish_icon.png,fish_icon_alt.png,fish_icon_alt2.png,fish_icon_blue.png,fish_icon_purple.png
+  ```
+  Place the extra template images in `Resource-VRChat/`. Both full detection (multi-scale) and fast detection (single cached scale) evaluate all listed templates and pick the best match each frame.
 
 ## Logging & Debugging
 
